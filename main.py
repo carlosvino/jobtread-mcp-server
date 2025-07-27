@@ -101,3 +101,6 @@ async def sse(request: Request):
             "message": f"Method '{method}' not found"
         }
     }
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
