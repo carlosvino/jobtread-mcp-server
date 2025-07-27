@@ -96,3 +96,6 @@ async def sse(request: Request):
             "message": "Method not found"
         }
     }
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "JobTread MCP server running"}
