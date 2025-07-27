@@ -6,11 +6,9 @@ import json
 import logging
 
 app = FastAPI()
-
-# Logging
 logging.basicConfig(level=logging.INFO)
 
-# CORS setup
+# Enable CORS (required by OpenAI tools)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,21 +17,50 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Health route for Railway
+# Demo fallback
+DEMO_PROJECTS = [
+    {
+        "id": "demo_1",
+        "name": "Smith Kitchen Remodel",
+        "budget": 50000,
+        "status": "in_progress"
+    },
+    {
+        "id": "demo_2",
+        "name": "TechCorp Office Renovation",
+        "budget": 250000,
+        "status": "planning"
+    }
+]
+
+# Healthcheck for Railway
 @app.get("/")
-async def root():
+@app.get("/health")
+async def health():
     return {"status": "ok", "message": "JobTread MCP server running"}
 
-# MCP entry point
+# MCP Handler (used by OpenAI)
 @app.post("/sse/")
 async def sse(request: Request):
     body = await request.json()
-    logging.info(f"Incoming MCP: {body}")
+    logging.info(f"Incoming MCP: {json.dumps(body)}")
 
     method = body.get("method")
-    rpc_id = body.get("id")
+    rpc_id = body.get("id", "unknown")
 
-    # Tool registration
+    # === 1. Connector Handshake ===
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": {
+                "title": "JobTread Connector",
+                "description": "Fetch JobTread project data and insights",
+                "version": "1.0.0"
+            }
+        }
+
+    # === 2. Define available tools ===
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
@@ -58,8 +85,8 @@ async def sse(request: Request):
             }
         }
 
-    # Tool execution
-    elif method == "tools/call":
+    # === 3. Tool Invocation (search) ===
+    if method == "tools/call":
         try:
             tool = body["params"]["name"]
             args = body["params"]["arguments"]
@@ -74,10 +101,12 @@ async def sse(request: Request):
                 data = r.json()
         except Exception as e:
             logging.error(f"[JobTread API error] {e}")
-            data = [{"id": "demo", "name": "Demo Project", "budget": 50000}]
+            data = DEMO_PROJECTS
 
         # Basic keyword filtering
-        results = [p for p in data if query in json.dumps(p).lower()][:5]
+        results = [
+            p for p in data if query in json.dumps(p).lower()
+        ][:5]
 
         return {
             "jsonrpc": "2.0",
@@ -92,15 +121,12 @@ async def sse(request: Request):
             }
         }
 
-    # Fallback
+    # === 4. Fallback for unsupported methods ===
     return {
         "jsonrpc": "2.0",
         "id": rpc_id,
         "error": {
             "code": -32601,
-            "message": f"Method '{method}' not found"
+            "message": f"Unsupported method '{method}'"
         }
     }
-@app.get("/health")
-async def health():
-    return {"status": "healthy"}
