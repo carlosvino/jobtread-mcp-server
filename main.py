@@ -4,6 +4,7 @@ import os
 import httpx
 import json
 import logging
+import uvicorn
 
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
@@ -17,28 +18,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Sample demo fallback
+# Fallback demo data
 DEMO_PROJECTS = [
     {"id": "demo_1", "name": "Smith Kitchen Remodel", "budget": 50000, "status": "in_progress"},
     {"id": "demo_2", "name": "TechCorp Office Renovation", "budget": 250000, "status": "planning"},
 ]
 
-# Railway healthcheck + root
 @app.get("/")
 @app.get("/health")
 async def health():
     return {"status": "ok", "message": "JobTread MCP server running"}
 
-# MCP Protocol entry
 @app.post("/sse/")
 async def sse(request: Request):
     body = await request.json()
-    logging.info(f"Incoming MCP: {json.dumps(body)}")
+    logging.info(f"[MCP] Incoming request: {json.dumps(body)}")
 
     method = body.get("method")
     rpc_id = body.get("id", "unknown")
 
-    # MCP Handshake for ChatGPT Connector
+    # 1. Initialization handshake
     if method == "initialize":
         return {
             "jsonrpc": "2.0",
@@ -50,7 +49,7 @@ async def sse(request: Request):
             }
         }
 
-    # Tool registration
+    # 2. List tools
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
@@ -65,7 +64,7 @@ async def sse(request: Request):
                             "properties": {
                                 "query": {
                                     "type": "string",
-                                    "description": "Keywords to search"
+                                    "description": "Search term"
                                 }
                             },
                             "required": ["query"]
@@ -75,14 +74,14 @@ async def sse(request: Request):
             }
         }
 
-    # Tool execution: search
+    # 3. Tool call
     if method == "tools/call":
         try:
             tool = body["params"]["name"]
             args = body["params"]["arguments"]
             query = args.get("query", "").lower()
 
-            token = os.environ["JOBTREAD_ACCESS_TOKEN"]
+            token = os.getenv("JOBTREAD_ACCESS_TOKEN")
             headers = {"Authorization": f"Bearer {token}"}
 
             async with httpx.AsyncClient() as client:
@@ -90,7 +89,7 @@ async def sse(request: Request):
                 r.raise_for_status()
                 data = r.json()
         except Exception as e:
-            logging.error(f"[JobTread API error] {e}")
+            logging.warning(f"[JobTread API fallback] {e}")
             data = DEMO_PROJECTS
 
         results = [p for p in data if query in json.dumps(p).lower()][:5]
@@ -108,7 +107,7 @@ async def sse(request: Request):
             }
         }
 
-    # Fallback for unsupported method
+    # 4. Fallback
     return {
         "jsonrpc": "2.0",
         "id": rpc_id,
@@ -117,3 +116,7 @@ async def sse(request: Request):
             "message": f"Method '{method}' not supported"
         }
     }
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")
