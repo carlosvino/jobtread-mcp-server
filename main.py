@@ -8,7 +8,7 @@ import logging
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 
-# Enable CORS (required by OpenAI tools)
+# Enable CORS for OpenAI Tools
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,29 +17,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Demo fallback
+# Sample demo fallback
 DEMO_PROJECTS = [
-    {
-        "id": "demo_1",
-        "name": "Smith Kitchen Remodel",
-        "budget": 50000,
-        "status": "in_progress"
-    },
-    {
-        "id": "demo_2",
-        "name": "TechCorp Office Renovation",
-        "budget": 250000,
-        "status": "planning"
-    }
+    {"id": "demo_1", "name": "Smith Kitchen Remodel", "budget": 50000, "status": "in_progress"},
+    {"id": "demo_2", "name": "TechCorp Office Renovation", "budget": 250000, "status": "planning"},
 ]
 
-# Healthcheck for Railway
+# Railway healthcheck + root
 @app.get("/")
 @app.get("/health")
 async def health():
     return {"status": "ok", "message": "JobTread MCP server running"}
 
-# MCP Handler (used by OpenAI)
+# MCP Protocol entry
 @app.post("/sse/")
 async def sse(request: Request):
     body = await request.json()
@@ -48,19 +38,19 @@ async def sse(request: Request):
     method = body.get("method")
     rpc_id = body.get("id", "unknown")
 
-    # === 1. Connector Handshake ===
+    # MCP Handshake for ChatGPT Connector
     if method == "initialize":
         return {
             "jsonrpc": "2.0",
             "id": rpc_id,
             "result": {
                 "title": "JobTread Connector",
-                "description": "Fetch JobTread project data and insights",
+                "description": "Search JobTread project data",
                 "version": "1.0.0"
             }
         }
 
-    # === 2. Define available tools ===
+    # Tool registration
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
@@ -85,7 +75,7 @@ async def sse(request: Request):
             }
         }
 
-    # === 3. Tool Invocation (search) ===
+    # Tool execution: search
     if method == "tools/call":
         try:
             tool = body["params"]["name"]
@@ -103,10 +93,7 @@ async def sse(request: Request):
             logging.error(f"[JobTread API error] {e}")
             data = DEMO_PROJECTS
 
-        # Basic keyword filtering
-        results = [
-            p for p in data if query in json.dumps(p).lower()
-        ][:5]
+        results = [p for p in data if query in json.dumps(p).lower()][:5]
 
         return {
             "jsonrpc": "2.0",
@@ -121,12 +108,12 @@ async def sse(request: Request):
             }
         }
 
-    # === 4. Fallback for unsupported methods ===
+    # Fallback for unsupported method
     return {
         "jsonrpc": "2.0",
         "id": rpc_id,
         "error": {
             "code": -32601,
-            "message": f"Unsupported method '{method}'"
+            "message": f"Method '{method}' not supported"
         }
     }
