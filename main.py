@@ -53,7 +53,7 @@ async def sse_stream(request: Request) -> StreamingResponse:
 async def sse(request: Request):
     try:
         body = await request.json()
-        logging.info(f"[MCP] Incoming request: {json.dumps(body)}")
+        logging.info(f"[MCP] Incoming request: {json.dumps(body, indent=2)}")
     except Exception as e:
         logging.error(f"[MCP] Failed to parse request body: {e}")
         return {
@@ -85,7 +85,8 @@ async def sse(request: Request):
                 "protocolVersion": client_protocol,
                 "capabilities": {
                     "tools": {
-                        "listChanged": False  # No dynamic tool updates
+                        "listChanged": False,
+                        "callable": True  # Added for MCP compliance
                     }
                 },
                 "serverInfo": {
@@ -116,10 +117,23 @@ async def sse(request: Request):
                             "properties": {
                                 "query": {
                                     "type": "string",
-                                    "description": "Search term to filter projects"
+                                    "description": "Search term to filter projects (e.g., project name or status)"
                                 }
                             },
-                            "required": ["query"]
+                            "required": ["query"],
+                            "additionalProperties": False
+                        },
+                        "responseSchema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "name": {"type": "string"},
+                                    "budget": {"type": "number"},
+                                    "status": {"type": "string"}
+                                }
+                            }
                         }
                     },
                     {
@@ -130,65 +144,86 @@ async def sse(request: Request):
                             "properties": {
                                 "id": {
                                     "type": "string",
-                                    "description": "Project ID to fetch"
+                                    "description": "Unique project ID to retrieve"
                                 }
                             },
-                            "required": ["id"]
+                            "required": ["id"],
+                            "additionalProperties": False
+                        },
+                        "responseSchema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "name": {"type": "string"},
+                                    "budget": {"type": "number"},
+                                    "status": {"type": "string"}
+                                }
+                            }
                         }
                     }
                 ]
             }
         }
 
-    # 4. Tool Execution
+    # 4. Tool Execution with streaming
     if method == "tools/call":
         logging.info("[MCP] Tools/call requested")
         params = body.get("params", {})
         tool_name = params.get("name")
         args = params.get("arguments", {})
 
-        try:
-            token = os.getenv("JOBTREAD_ACCESS_TOKEN")
-            if not token:
-                logging.warning("[MCP] No JOBTREAD_ACCESS_TOKEN set, using demo data")
+        async def stream_results():
+            try:
+                token = os.getenv("JOBTREAD_ACCESS_TOKEN")
+                if not token:
+                    logging.warning("[MCP] No JOBTREAD_ACCESS_TOKEN set, using demo data")
+                    data = DEMO_PROJECTS
+                else:
+                    headers = {"Authorization": f"Bearer {token}"}
+                    async with httpx.AsyncClient() as client:
+                        r = await client.get("https://api.jobtread.com/v1/projects", headers=headers)
+                        r.raise_for_status()
+                        data = r.json()
+            except Exception as e:
+                logging.warning(f"[JobTread API error, using fallback]: {e}")
                 data = DEMO_PROJECTS
+
+            results = []
+            if tool_name == "search":
+                query = args.get("query", "").lower()
+                results = [p for p in data if query in json.dumps(p).lower()][:5]
+            elif tool_name == "fetch":
+                project_id = args.get("id", "")
+                results = [p for p in data if p.get("id") == project_id]
             else:
-                headers = {"Authorization": f"Bearer {token}"}
-                async with httpx.AsyncClient() as client:
-                    r = await client.get("https://api.jobtread.com/v1/projects", headers=headers)
-                    r.raise_for_status()
-                    data = r.json()
-        except Exception as e:
-            logging.warning(f"[JobTread API error, using fallback]: {e}")
-            data = DEMO_PROJECTS
+                logging.error(f"[MCP] Unknown tool: {tool_name}")
+                yield json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": rpc_id,
+                    "error": {"code": -32600, "message": f"Invalid tool: {tool_name}"}
+                }) + "\n"
+                return
 
-        if tool_name == "search":
-            query = args.get("query", "").lower()
-            results = [p for p in data if query in json.dumps(p).lower()][:5]
-        elif tool_name == "fetch":
-            project_id = args.get("id", "")
-            results = [p for p in data if p.get("id") == project_id]
-        else:
-            logging.error(f"[MCP] Unknown tool: {tool_name}")
-            return {
-                "jsonrpc": "2.0",
-                "id": rpc_id,
-                "error": {"code": -32600, "message": f"Invalid tool: {tool_name}"}
-            }
-
-        logging.info(f"[MCP] Tool {tool_name} executed, results: {len(results)}")
-        return {
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "result": {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(results, indent=2)
+            logging.info(f"[MCP] Tool {tool_name} executed, results: {len(results)}")
+            for i, result in enumerate(results):
+                yield json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": rpc_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps([result], indent=2)
+                            }
+                        ],
+                        "isFinal": i == len(results) - 1
                     }
-                ]
-            }
-        }
+                }) + "\n"
+                await asyncio.sleep(0.1)  # Simulate streaming delay
+
+        return StreamingResponse(stream_results(), media_type="application/json")
 
     # 5. Fallback for unknown methods
     logging.warning(f"[MCP] Unknown method: {method}")
