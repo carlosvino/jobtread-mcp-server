@@ -178,6 +178,7 @@ async def sse(request: Request):
             try:
                 grant_key = os.getenv("JOBTREAD_GRANT_KEY")
                 org_id = os.getenv("JOBTREAD_ORG_ID")
+                logging.info(f"[MCP] Detected JOBTREAD_GRANT_KEY: {grant_key or 'None'}, JOBTREAD_ORG_ID: {org_id or 'None'}")
                 if not grant_key or not org_id:
                     logging.warning("[MCP] Missing JOBTREAD_GRANT_KEY or JOBTREAD_ORG_ID, using demo data")
                     data = DEMO_PROJECTS
@@ -191,8 +192,12 @@ async def sse(request: Request):
                     async with httpx.AsyncClient() as client:
                         r = await client.post("https://api.jobtread.com/pave", json=payload)
                         r.raise_for_status()
-                        # Adjust based on JobTread's response structure
-                        data = r.json().get("data", {}).get("projects", []) if r.json().get("data") else []
+                        # Adjust parsing based on JobTread's response
+                        response_data = r.json()
+                        logging.info(f"[MCP] JobTread API response: {json.dumps(response_data, indent=2)}")
+                        data = response_data.get("data", {}).get("projects", []) if "data" in response_data else []
+                        if not data:
+                            data = response_data.get("projects", [])  # Fallback if structure differs
             except Exception as e:
                 logging.warning(f"[JobTread API error, using fallback]: {e}")
                 data = DEMO_PROJECTS
