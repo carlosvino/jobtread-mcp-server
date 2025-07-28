@@ -9,7 +9,7 @@ import uvicorn
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 
-# Enable CORS for OpenAI Tools
+# CORS middleware for OpenAI tool compatibility
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,7 +18,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Fallback demo data
+# Demo fallback data if API fails
 DEMO_PROJECTS = [
     {"id": "demo_1", "name": "Smith Kitchen Remodel", "budget": 50000, "status": "in_progress"},
     {"id": "demo_2", "name": "TechCorp Office Renovation", "budget": 250000, "status": "planning"},
@@ -37,7 +37,7 @@ async def sse(request: Request):
     method = body.get("method")
     rpc_id = body.get("id", "unknown")
 
-    # 1. Initialization handshake
+    # MCP Handshake – now includes required capabilities and serverInfo
     if method == "initialize":
         return {
             "jsonrpc": "2.0",
@@ -45,11 +45,16 @@ async def sse(request: Request):
             "result": {
                 "title": "JobTread Connector",
                 "description": "Search JobTread project data",
-                "version": "1.0.0"
+                "version": "1.0.0",
+                "capabilities": {"callable": True},
+                "serverInfo": {
+                    "name": "JobTread MCP Server",
+                    "version": "1.0.0"
+                }
             }
         }
 
-    # 2. List tools
+    # List available tools
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
@@ -74,7 +79,7 @@ async def sse(request: Request):
             }
         }
 
-    # 3. Tool call
+    # Execute tool
     if method == "tools/call":
         try:
             tool = body["params"]["name"]
@@ -92,6 +97,7 @@ async def sse(request: Request):
             logging.warning(f"[JobTread API fallback] {e}")
             data = DEMO_PROJECTS
 
+        # Return matching results (top 5)
         results = [p for p in data if query in json.dumps(p).lower()][:5]
 
         return {
@@ -107,7 +113,7 @@ async def sse(request: Request):
             }
         }
 
-    # 4. Fallback
+    # Unsupported method fallback
     return {
         "jsonrpc": "2.0",
         "id": rpc_id,
