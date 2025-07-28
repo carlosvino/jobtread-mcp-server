@@ -184,19 +184,29 @@ async def sse(request: Request):
                     data = DEMO_PROJECTS
                 else:
                     payload = {
-                        "query": {
-                            "$": {"grantKey": grant_key},
-                            "currentGrant": {"id": org_id}
+                        "organization": {
+                            "$": {"grantKey": grant_key, "id": org_id},
+                            "accounts": {
+                                "$": {
+                                    "where": [["name", "contains", args.get("query", "")] if tool_name == "search" else ["id", "=", args.get("id", "")] if tool_name == "fetch" else {}]
+                                },
+                                "nodes": {
+                                    "id": {},
+                                    "name": {},
+                                    "type": {}
+                                }
+                            }
                         }
                     }
+                    logging.info(f"[MCP] Sending payload to JobTread: {json.dumps(payload, indent=2)}")
                     async with httpx.AsyncClient() as client:
                         r = await client.post("https://api.jobtread.com/pave", json=payload, timeout=10.0)
                         r.raise_for_status()
                         response_data = r.json()
                         logging.info(f"[MCP] JobTread API response: {json.dumps(response_data, indent=2)}")
-                        data = response_data.get("data", {}).get("projects", []) if "data" in response_data else []
+                        data = response_data.get("organization", {}).get("accounts", {}).get("nodes", [])
                         if not data:
-                            data = response_data.get("value", [])  # Fallback for Pave-like structure
+                            data = response_data.get("data", {}).get("accounts", {}).get("nodes", [])
             except httpx.RequestError as e:
                 logging.warning(f"[JobTread API request error, using fallback]: {e}")
                 data = DEMO_PROJECTS
@@ -204,21 +214,11 @@ async def sse(request: Request):
                 logging.warning(f"[JobTread API error, using fallback]: {e}")
                 data = DEMO_PROJECTS
 
-            results = []
-            if tool_name == "search":
-                query = args.get("query", "").lower()
-                results = [p for p in data if query in json.dumps(p).lower()][:5]
-            elif tool_name == "fetch":
-                project_id = args.get("id", "")
-                results = [p for p in data if p.get("id") == project_id]
-            else:
-                logging.error(f"[MCP] Unknown tool: {tool_name}")
-                yield json.dumps({
-                    "jsonrpc": "2.0",
-                    "id": rpc_id,
-                    "error": {"code": -32600, "message": f"Invalid tool: {tool_name}"}
-                }) + "\n"
-                return
+            results = data  # Use nodes as results
+            if tool_name == "search" and not results:
+                results = []  # Ensure empty list for no matches
+            elif tool_name == "fetch" and len(results) > 1:
+                results = [r for r in results if r.get("id") == args.get("id", "")]  # Filter by ID
 
             logging.info(f"[MCP] Tool {tool_name} executed, results: {len(results)}")
             for i, result in enumerate(results):
