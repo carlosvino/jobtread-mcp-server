@@ -9,7 +9,7 @@ import uvicorn
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 
-# CORS middleware for OpenAI tool compatibility
+# Enable CORS (required for ChatGPT MCP)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,7 +18,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Demo fallback data if API fails
+# Sample fallback projects (for when JobTread API fails)
 DEMO_PROJECTS = [
     {"id": "demo_1", "name": "Smith Kitchen Remodel", "budget": 50000, "status": "in_progress"},
     {"id": "demo_2", "name": "TechCorp Office Renovation", "budget": 250000, "status": "planning"},
@@ -32,12 +32,12 @@ async def health():
 @app.post("/sse/")
 async def sse(request: Request):
     body = await request.json()
-    logging.info(f"[MCP] Incoming request: {json.dumps(body)}")
+    logging.info(f"[MCP] Incoming: {json.dumps(body)}")
 
     method = body.get("method")
     rpc_id = body.get("id", "unknown")
 
-    # MCP Handshake – now includes required capabilities and serverInfo
+    # MCP Handshake
     if method == "initialize":
         return {
             "jsonrpc": "2.0",
@@ -46,7 +46,9 @@ async def sse(request: Request):
                 "title": "JobTread Connector",
                 "description": "Search JobTread project data",
                 "version": "1.0.0",
-                "capabilities": {"callable": True},
+                "capabilities": {
+                    "callable": True
+                },
                 "serverInfo": {
                     "name": "JobTread MCP Server",
                     "version": "1.0.0"
@@ -54,7 +56,7 @@ async def sse(request: Request):
             }
         }
 
-    # List available tools
+    # Register tool(s)
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
@@ -94,10 +96,9 @@ async def sse(request: Request):
                 r.raise_for_status()
                 data = r.json()
         except Exception as e:
-            logging.warning(f"[JobTread API fallback] {e}")
+            logging.warning(f"[JobTread fallback] {e}")
             data = DEMO_PROJECTS
 
-        # Return matching results (top 5)
         results = [p for p in data if query in json.dumps(p).lower()][:5]
 
         return {
@@ -113,7 +114,7 @@ async def sse(request: Request):
             }
         }
 
-    # Unsupported method fallback
+    # Unsupported methods
     return {
         "jsonrpc": "2.0",
         "id": rpc_id,
