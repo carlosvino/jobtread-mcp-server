@@ -96,7 +96,7 @@ async def sse(request: Request):
             }
         }
 
-    # 2. Handle 'initialized' notification
+    # 2. Handle 'notifications/initialized'
     if method == "notifications/initialized":
         logging.info("[MCP] Received 'notifications/initialized'")
         return {}
@@ -117,11 +117,11 @@ async def sse(request: Request):
                             "properties": {
                                 "query": {
                                     "type": "string",
-                                    "description": "Search term to filter projects (e.g., project name or status)"
+                                    "description": "Search term to filter projects"
                                 }
                             },
                             "required": ["query"],
-                            "additionalProperties": False
+                            "additionalProperties": false
                         },
                         "responseSchema": {
                             "type": "array",
@@ -144,11 +144,11 @@ async def sse(request: Request):
                             "properties": {
                                 "id": {
                                     "type": "string",
-                                    "description": "Unique project ID to retrieve"
+                                    "description": "Project ID to fetch"
                                 }
                             },
                             "required": ["id"],
-                            "additionalProperties": False
+                            "additionalProperties": false
                         },
                         "responseSchema": {
                             "type": "array",
@@ -191,7 +191,7 @@ async def sse(request: Request):
                     async with httpx.AsyncClient() as client:
                         r = await client.post("https://api.jobtread.com/pave", json=payload)
                         r.raise_for_status()
-                        # Assuming the response contains projects; adjust based on actual API response
+                        # Adjust based on JobTread's response structure
                         data = r.json().get("data", {}).get("projects", []) if r.json().get("data") else []
             except Exception as e:
                 logging.warning(f"[JobTread API error, using fallback]: {e}")
