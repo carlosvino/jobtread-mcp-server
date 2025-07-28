@@ -1,17 +1,17 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
 import os
 import httpx
 import json
 import logging
 import uvicorn
-from fastapi_mcp import FastApiMCP
+import asyncio
 
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 
-# Enable CORS for all origins (including OpenAI)
+# Enable CORS for OpenAI Tools
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,45 +26,127 @@ DEMO_PROJECTS = [
     {"id": "demo_2", "name": "TechCorp Office Renovation", "budget": 250000, "status": "planning"},
 ]
 
-# Health check endpoint
 @app.get("/")
 @app.get("/health")
 async def health():
     return {"status": "ok", "message": "JobTread MCP server running"}
 
-# Define the search input model
-class SearchInput(BaseModel):
-    query: str
+@app.get("/sse/")
+async def sse_stream(request: Request) -> StreamingResponse:
+    async def event_generator():
+        yield 'data: {"status": "connected"}\n\n'
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                yield 'data: {"type": "heartbeat"}\n\n'
+                await asyncio.sleep(30)
+        except Exception as e:
+            logging.error(f"SSE error: {e}")
 
-# Search endpoint (exposed as MCP tool)
-@app.post("/search")
-async def search_projects(input: SearchInput):
-    query = input.query.lower()
-    try:
-        token = os.getenv("JOBTREAD_ACCESS_TOKEN")
-        if not token:
-            raise ValueError("No JOBTREAD_ACCESS_TOKEN found, using demo data")
-        headers = {"Authorization": f"Bearer {token}"}
-        async with httpx.AsyncClient() as client:
-            r = await client.get("https://api.jobtread.com/v1/projects", headers=headers)
-            r.raise_for_status()
-            data = r.json()
-    except Exception as e:
-        logging.warning(f"[JobTread API fallback] {e}")
-        data = DEMO_PROJECTS
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-    results = [p for p in data if query in json.dumps(p).lower()][:5]
-    return {"results": results}
+@app.post("/sse/")
+async def sse(request: Request):
+    body = await request.json()
+    logging.info(f"[MCP] Incoming request: {json.dumps(body)}")
 
-# Initialize and mount MCP
-mcp = FastApiMCP(
-    app,
-    name="JobTread Connector",
-    description="Search JobTread construction projects",
-    # base_url can be set if needed, but Railway will handle it dynamically
-)
+    method = body.get("method")
+    rpc_id = body.get("id", None)  # Notifications may lack id
 
-mcp.mount()  # Mounts MCP at /mcp
+    # 1. MCP Handshake (initialize)
+    if method == "initialize":
+        params = body.get("params", {})
+        client_protocol = params.get("protocolVersion", "2025-03-26")  # Default if missing
+        # Echo the client's protocolVersion (assume supported; add version check if needed)
+        return {
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": {
+                "protocolVersion": client_protocol,  # Echo or set to supported version
+                "capabilities": {
+                    "tools": {}  # Basic tools support; add "listChanged": true if you support notifications
+                },
+                "serverInfo": {
+                    "name": "JobTread MCP Server",
+                    "version": "1.0.0"
+                },
+                "instructions": "Search JobTread projects using the provided tools."  # Optional
+            }
+        }
+
+    # Handle 'initialized' notification (client sends this after your response; no reply needed)
+    if method == "initialized":
+        logging.info("[MCP] Received 'initialized' notification from client")
+        return {}  # No response for notifications
+
+    # 2. Declare tools
+    if method == "tools/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": {
+                "tools": [
+                    {
+                        "name": "search",
+                        "description": "Search JobTread construction projects",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "Search term"
+                                }
+                            },
+                            "required": ["query"]
+                        }
+                    }
+                ]
+            }
+        }
+
+    # 3. Tool Execution
+    if method == "tools/call":
+        try:
+            tool = body["params"]["name"]
+            args = body["params"]["arguments"]
+            query = args.get("query", "").lower()
+
+            token = os.getenv("JOBTREAD_ACCESS_TOKEN")
+            headers = {"Authorization": f"Bearer {token}"}
+
+            async with httpx.AsyncClient() as client:
+                r = await client.get("https://api.jobtread.com/v1/projects", headers=headers)
+                r.raise_for_status()
+                data = r.json()
+        except Exception as e:
+            logging.warning(f"[JobTread API fallback] {e}")
+            data = DEMO_PROJECTS
+
+        results = [p for p in data if query in json.dumps(p).lower()][:5]
+
+        return {
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(results, indent=2)
+                    }
+                ]
+            }
+        }
+
+    # 4. Fallback for unknown methods
+    return {
+        "jsonrpc": "2.0",
+        "id": rpc_id,
+        "error": {
+            "code": -32601,
+            "message": f"Method '{method}' not supported"
+        }
+    }
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
