@@ -77,8 +77,8 @@ async def fetch(id: str) -> str:
     results = [p for p in data if p.get("id") == id]
     return str(results)
 
-# Mount FastMCP onto FastAPI at /sse/
-app.include_router(mcp.fastapi(), prefix="/sse")
+# Mount FastMCP router onto FastAPI at /sse/
+app.include_router(mcp.get_fastapi_router(), prefix="/sse")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
