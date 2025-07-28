@@ -7,7 +7,6 @@ import json
 import logging
 import uvicorn
 import asyncio
-from openai import OpenAI
 
 app = FastAPI()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -27,25 +26,21 @@ DEMO_PROJECTS = [
     {"id": "demo_2", "name": "TechCorp Office Renovation", "budget": 250000, "status": "planning"},
 ]
 
-# Simplified schema mapping (based on your provided JobTread schema)
+# JobTread Schema Mapping (subset for brevity, expand as needed)
 JOBTREAD_SCHEMA = {
     "queries": {
-        "account": {"input": {"id": "jobtreadId"}, "output": {"id": "string", "name": "string", "isTaxable": "boolean", "type": "string"}},
-        "job": {"input": {"id": "jobtreadId"}, "output": {"id": "string", "name": "string", "description": "string"}},
-        "document": {"input": {"id": "jobtreadId"}, "output": {"id": "string", "name": "string", "type": "string"}},
-        "customFieldValues": {"input": {"size": "integer"}, "output": {"nodes": {"id": "string", "value": "string", "customField": {"id": "string"}}}},
-        # Add more queries as needed (e.g., location, task, etc.)
+        "account": {"input": {"id": "string"}, "output": {"id": "string", "name": "string", "isTaxable": "boolean"}},
+        "job": {"input": {"id": "string"}, "output": {"id": "string", "name": "string", "description": "string"}},
+        "document": {"input": {"id": "string"}, "output": {"id": "string", "name": "string", "type": "string"}},
     },
     "mutations": {
-        "createAccount": {"input": {"organizationId": "jobtreadId", "name": "string", "type": "string"}, "output": {"id": "string", "name": "string", "type": "string"}},
-        "createJob": {"input": {"organizationId": "jobtreadId", "name": "string", "description": "string"}, "output": {"id": "string", "name": "string", "description": "string"}},
-        "updateAccount": {"input": {"id": "jobtreadId", "name": "string"}, "output": {"id": "string", "name": "string"}},
-        "deleteAccount": {"input": {"id": "jobtreadId"}, "output": {"success": "boolean"}},
-        # Add more mutations as needed (e.g., createDocument, deleteJob)
+        "createAccount": {"input": {"organizationId": "string", "name": "string", "type": "string"}, "output": {"id": "string", "name": "string"}},
+        "createJob": {"input": {"name": "string", "description": "string", "organizationId": "string"}, "output": {"id": "string", "name": "string"}},
+        "updateAccount": {"input": {"id": "string", "name": "string"}, "output": {"id": "string", "name": "string"}},
+        "deleteAccount": {"input": {"id": "string"}, "output": {"success": "boolean"}},
     },
     "other": {
         "signQuery": {"input": {"query": "string"}, "output": {"token": "string"}},
-        # Add other operations (e.g., closeNegativePayable) as needed
     }
 }
 
@@ -107,8 +102,8 @@ async def sse(request: Request):
                 "protocolVersion": client_protocol,
                 "capabilities": {
                     "tools": {
-                        "listChanged": false,
-                        "callable": true
+                        "listChanged": False,
+                        "callable": True
                     }
                 },
                 "serverInfo": {
@@ -129,16 +124,16 @@ async def sse(request: Request):
             for op_name, op_details in operations.items():
                 tool = {
                     "name": op_name,
-                    "description": f"Perform {category} operation {op_name} on JobTread",
+                    "description": f"Perform {category.replace('queries', 'query').replace('mutations', 'action')} {op_name} on JobTread",
                     "inputSchema": {
                         "type": "object",
                         "properties": {k: {"type": v} for k, v in op_details["input"].items()},
                         "required": list(op_details["input"].keys()),
-                        "additionalProperties": false
+                        "additionalProperties": False
                     },
                     "responseSchema": {
-                        "type": "object" if category == "mutations" else "array",
-                        "properties": op_details["output"] if category == "mutations" else {"items": {"type": "object", "properties": op_details["output"]}}
+                        "type": "object" if category == "mutations" or category == "other" else "array",
+                        "properties": op_details["output"] if category in ["mutations", "other"] else {"items": {"type": "object", "properties": op_details["output"]}}
                     }
                 }
                 tools.append(tool)
@@ -158,31 +153,16 @@ async def sse(request: Request):
             try:
                 grant_key = os.getenv("JOBTREAD_GRANT_KEY")
                 org_id = os.getenv("JOBTREAD_ORG_ID")
-                openai_api_key = os.getenv("OPENAI_API_KEY")
-                vector_store_id = os.getenv("OPENAI_VECTOR_STORE_ID", "vs_123456")
-                logging.info(f"[MCP] Detected JOBTREAD_GRANT_KEY: {grant_key or 'None'}, JOBTREAD_ORG_ID: {org_id or 'None'}, OPENAI_API_KEY: {openai_api_key or 'None'}, OPENAI_VECTOR_STORE_ID: {vector_store_id}")
-
+                logging.info(f"[MCP] Detected JOBTREAD_GRANT_KEY: {grant_key or 'None'}, JOBTREAD_ORG_ID: {org_id or 'None'}")
                 if not grant_key or not org_id:
-                    logging.warning("[MCP] Missing JOBTREAD credentials, trying vector store or demo data")
-                    if openai_api_key and vector_store_id and tool_name in ["search", "fetch"]:
-                        from openai import OpenAI
-                        client = OpenAI(api_key=openai_api_key)
-                        query = args.get("query", "") if tool_name == "search" else args.get("id", "") if tool_name == "fetch" else ""
-                        response = client.beta.vector_stores.file_searches.perform(
-                            vector_store_id=vector_store_id,
-                            query=query,
-                            max_results=5
-                        )
-                        data = response.data  # Adjust based on response
-                        logging.info(f"[MCP] Vector store response: {json.dumps(response, indent=2)}")
-                    else:
-                        data = DEMO_PROJECTS if tool_name in ["search", "fetch"] else [{"error": "Cannot proceed without credentials"}]
+                    logging.warning("[MCP] Missing JOBTREAD credentials, using demo data")
+                    data = DEMO_PROJECTS if tool_name in JOBTREAD_SCHEMA["queries"] else [{"error": "Cannot proceed without credentials"}] if tool_name in JOBTREAD_SCHEMA["mutations"] else [{}]
                 else:
                     payload = {}
                     if tool_name in JOBTREAD_SCHEMA["queries"]:
                         payload = {
                             "organization": {
-                                "$": {"grantKey": grant_key, "id": org_id, "timeZone": "America/Los_Angeles"},
+                                "$": {"grantKey": grant_key, "id": org_id},
                                 tool_name: {
                                     "$": {k: v for k, v in args.items() if k in JOBTREAD_SCHEMA["queries"][tool_name]["input"]},
                                     "nodes": JOBTREAD_SCHEMA["queries"][tool_name]["output"]
@@ -192,10 +172,7 @@ async def sse(request: Request):
                     elif tool_name in JOBTREAD_SCHEMA["mutations"]:
                         payload = {
                             tool_name: {
-                                "$": {
-                                    "grantKey": grant_key,
-                                    **{k: v for k, v in args.items() if k in JOBTREAD_SCHEMA["mutations"][tool_name]["input"]}
-                                },
+                                "$": {"grantKey": grant_key, **{k: v for k, v in args.items() if k in JOBTREAD_SCHEMA["mutations"][tool_name]["input"]}},
                                 JOBTREAD_SCHEMA["mutations"][tool_name]["output"].keys(): {}
                             }
                         }
@@ -226,8 +203,10 @@ async def sse(request: Request):
                             data = response_data.get(tool_name, {})
 
                 results = [data] if isinstance(data, dict) else data
-                if tool_name == "fetch" and len(results) > 1:
-                    results = [r for r in results if r.get("id") == args.get("id", "")]
+                if tool_name in JOBTREAD_SCHEMA["queries"] and not results:
+                    results = []  # Ensure empty list for no matches
+                elif tool_name in JOBTREAD_SCHEMA["queries"] and len(results) > 1 and "id" in args:
+                    results = [r for r in results if r.get("id") == args.get("id", "")]  # Filter by ID for fetch-like queries
 
                 logging.info(f"[MCP] Tool {tool_name} executed, results: {len(results)}")
                 for i, result in enumerate(results):
@@ -238,7 +217,7 @@ async def sse(request: Request):
                             "content": [
                                 {
                                     "type": "text",
-                                "text": json.dumps([result], indent=2)
+                                    "text": json.dumps([result], indent=2)
                                 }
                             ],
                             "isFinal": i == len(results) - 1
@@ -246,7 +225,15 @@ async def sse(request: Request):
                     }) + "\n"
                     await asyncio.sleep(0.1)
 
-            return StreamingResponse(stream_results(), media_type="application/json")
+            except Exception as e:
+                logging.error(f"[MCP] Unexpected error: {e}")
+                yield json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": rpc_id,
+                    "error": {"code": -32000, "message": f"Internal error: {str(e)}"}
+                }) + "\n"
+
+        return StreamingResponse(stream_results(), media_type="application/json")
 
     # 5. Fallback for unknown methods
     logging.warning(f"[MCP] Unknown method: {method}")
