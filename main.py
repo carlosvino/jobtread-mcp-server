@@ -26,21 +26,31 @@ DEMO_PROJECTS = [
     {"id": "demo_2", "name": "TechCorp Office Renovation", "budget": 250000, "status": "planning"},
 ]
 
-# JobTread Schema Mapping (subset for brevity, expand as needed)
+# JobTread Schema Mapping (expanded from docs)
 JOBTREAD_SCHEMA = {
     "queries": {
-        "account": {"input": {"id": "string"}, "output": {"id": "string", "name": "string", "isTaxable": "boolean"}},
+        "account": {"input": {"id": "string"}, "output": {"id": "string", "name": "string", "isTaxable": "boolean", "type": "string"}},
         "job": {"input": {"id": "string"}, "output": {"id": "string", "name": "string", "description": "string"}},
         "document": {"input": {"id": "string"}, "output": {"id": "string", "name": "string", "type": "string"}},
+        "customFieldValues": {"input": {"size": "integer"}, "output": {"nodes": {"id": "string", "value": "string", "customField": {"id": "string"}}}},
+        "location": {"input": {"id": "string"}, "output": {"id": "string", "name": "string", "address": "string"}},
+        "task": {"input": {"id": "string"}, "output": {"id": "string", "name": "string", "description": "string"}},
+        # Add more (e.g., "costCode", "payment") as needed
     },
     "mutations": {
-        "createAccount": {"input": {"organizationId": "string", "name": "string", "type": "string"}, "output": {"id": "string", "name": "string"}},
+        "createAccount": {"input": {"organizationId": "string", "name": "string", "type": "string", "isTaxable": "boolean"}, "output": {"id": "string", "name": "string", "type": "string"}},
         "createJob": {"input": {"name": "string", "description": "string", "organizationId": "string"}, "output": {"id": "string", "name": "string"}},
         "updateAccount": {"input": {"id": "string", "name": "string"}, "output": {"id": "string", "name": "string"}},
         "deleteAccount": {"input": {"id": "string"}, "output": {"success": "boolean"}},
+        "createDocument": {"input": {"accountId": "string", "name": "string", "type": "string"}, "output": {"id": "string", "name": "string"}},
+        "updateJob": {"input": {"id": "string", "name": "string"}, "output": {"id": "string", "name": "string"}},
+        "deleteJob": {"input": {"id": "string"}, "output": {"success": "boolean"}},
+        # Add more (e.g., "createCostItem", "updateDocument")
     },
     "other": {
         "signQuery": {"input": {"query": "string"}, "output": {"token": "string"}},
+        "notifyTaskAssignees": {"input": {"jobId": "string", "membershipIds": "array"}, "output": {"success": "boolean"}},
+        # Add more (e.g., "closeNegativePayable")
     }
 }
 
@@ -162,7 +172,7 @@ async def sse(request: Request):
                     if tool_name in JOBTREAD_SCHEMA["queries"]:
                         payload = {
                             "organization": {
-                                "$": {"grantKey": grant_key, "id": org_id},
+                                "$": {"grantKey": grant_key, "id": org_id, "timeZone": "America/Los_Angeles"},
                                 tool_name: {
                                     "$": {k: v for k, v in args.items() if k in JOBTREAD_SCHEMA["queries"][tool_name]["input"]},
                                     "nodes": JOBTREAD_SCHEMA["queries"][tool_name]["output"]
@@ -206,7 +216,7 @@ async def sse(request: Request):
                 if tool_name in JOBTREAD_SCHEMA["queries"] and not results:
                     results = []  # Ensure empty list for no matches
                 elif tool_name in JOBTREAD_SCHEMA["queries"] and len(results) > 1 and "id" in args:
-                    results = [r for r in results if r.get("id") == args.get("id", "")]  # Filter by ID for fetch-like queries
+                    results = [r for r in results if r.get("id") == args.get("id", "")]  # Filter by ID
 
                 logging.info(f"[MCP] Tool {tool_name} executed, results: {len(results)}")
                 for i, result in enumerate(results):
