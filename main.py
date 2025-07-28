@@ -7,6 +7,7 @@ import json
 import logging
 import uvicorn
 import asyncio
+from openai import OpenAI
 
 app = FastAPI()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -25,6 +26,28 @@ DEMO_PROJECTS = [
     {"id": "demo_1", "name": "Smith Kitchen Remodel", "budget": 50000, "status": "in_progress"},
     {"id": "demo_2", "name": "TechCorp Office Renovation", "budget": 250000, "status": "planning"},
 ]
+
+# Simplified schema mapping (based on your provided JobTread schema)
+JOBTREAD_SCHEMA = {
+    "queries": {
+        "account": {"input": {"id": "jobtreadId"}, "output": {"id": "string", "name": "string", "isTaxable": "boolean", "type": "string"}},
+        "job": {"input": {"id": "jobtreadId"}, "output": {"id": "string", "name": "string", "description": "string"}},
+        "document": {"input": {"id": "jobtreadId"}, "output": {"id": "string", "name": "string", "type": "string"}},
+        "customFieldValues": {"input": {"size": "integer"}, "output": {"nodes": {"id": "string", "value": "string", "customField": {"id": "string"}}}},
+        # Add more queries as needed (e.g., location, task, etc.)
+    },
+    "mutations": {
+        "createAccount": {"input": {"organizationId": "jobtreadId", "name": "string", "type": "string"}, "output": {"id": "string", "name": "string", "type": "string"}},
+        "createJob": {"input": {"organizationId": "jobtreadId", "name": "string", "description": "string"}, "output": {"id": "string", "name": "string", "description": "string"}},
+        "updateAccount": {"input": {"id": "jobtreadId", "name": "string"}, "output": {"id": "string", "name": "string"}},
+        "deleteAccount": {"input": {"id": "jobtreadId"}, "output": {"success": "boolean"}},
+        # Add more mutations as needed (e.g., createDocument, deleteJob)
+    },
+    "other": {
+        "signQuery": {"input": {"query": "string"}, "output": {"token": "string"}},
+        # Add other operations (e.g., closeNegativePayable) as needed
+    }
+}
 
 @app.get("/")
 @app.get("/health")
@@ -65,7 +88,6 @@ async def sse(request: Request):
     method = body.get("method")
     rpc_id = body.get("id", None)
 
-    # 1. MCP Handshake (initialize)
     if method == "initialize":
         params = body.get("params", {})
         client_protocol = params.get("protocolVersion", "2025-06-18")
@@ -85,8 +107,8 @@ async def sse(request: Request):
                 "protocolVersion": client_protocol,
                 "capabilities": {
                     "tools": {
-                        "listChanged": False,
-                        "callable": True
+                        "listChanged": false,
+                        "callable": true
                     }
                 },
                 "serverInfo": {
@@ -96,78 +118,36 @@ async def sse(request: Request):
             }
         }
 
-    # 2. Handle 'notifications/initialized'
     if method == "notifications/initialized":
         logging.info("[MCP] Received 'notifications/initialized'")
         return {}
 
-    # 3. Declare tools
     if method == "tools/list":
         logging.info("[MCP] Tools/list requested")
+        tools = []
+        for category, operations in JOBTREAD_SCHEMA.items():
+            for op_name, op_details in operations.items():
+                tool = {
+                    "name": op_name,
+                    "description": f"Perform {category} operation {op_name} on JobTread",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {k: {"type": v} for k, v in op_details["input"].items()},
+                        "required": list(op_details["input"].keys()),
+                        "additionalProperties": false
+                    },
+                    "responseSchema": {
+                        "type": "object" if category == "mutations" else "array",
+                        "properties": op_details["output"] if category == "mutations" else {"items": {"type": "object", "properties": op_details["output"]}}
+                    }
+                }
+                tools.append(tool)
         return {
             "jsonrpc": "2.0",
             "id": rpc_id,
-            "result": {
-                "tools": [
-                    {
-                        "name": "search",
-                        "description": "Search JobTread construction projects by keyword",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": "Search term to filter projects"
-                                }
-                            },
-                            "required": ["query"],
-                            "additionalProperties": false
-                        },
-                        "responseSchema": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "id": {"type": "string"},
-                                    "name": {"type": "string"},
-                                    "budget": {"type": "number"},
-                                    "status": {"type": "string"}
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "name": "fetch",
-                        "description": "Fetch a specific JobTread project by ID",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "id": {
-                                    "type": "string",
-                                    "description": "Project ID to fetch"
-                                }
-                            },
-                            "required": ["id"],
-                            "additionalProperties": false
-                        },
-                        "responseSchema": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "id": {"type": "string"},
-                                    "name": {"type": "string"},
-                                    "budget": {"type": "number"},
-                                    "status": {"type": "string"}
-                                }
-                            }
-                        }
-                    }
-                ]
-            }
+            "result": {"tools": tools}
         }
 
-    # 4. Tool Execution with streaming
     if method == "tools/call":
         logging.info("[MCP] Tools/call requested")
         params = body.get("params", {})
@@ -178,32 +158,54 @@ async def sse(request: Request):
             try:
                 grant_key = os.getenv("JOBTREAD_GRANT_KEY")
                 org_id = os.getenv("JOBTREAD_ORG_ID")
-                logging.info(f"[MCP] Detected JOBTREAD_GRANT_KEY: {grant_key or 'None'}, JOBTREAD_ORG_ID: {org_id or 'None'}")
+                openai_api_key = os.getenv("OPENAI_API_KEY")
+                vector_store_id = os.getenv("OPENAI_VECTOR_STORE_ID", "vs_123456")
+                logging.info(f"[MCP] Detected JOBTREAD_GRANT_KEY: {grant_key or 'None'}, JOBTREAD_ORG_ID: {org_id or 'None'}, OPENAI_API_KEY: {openai_api_key or 'None'}, OPENAI_VECTOR_STORE_ID: {vector_store_id}")
+
                 if not grant_key or not org_id:
-                    logging.warning("[MCP] Missing JOBTREAD_GRANT_KEY or JOBTREAD_ORG_ID, using demo data")
-                    data = DEMO_PROJECTS
+                    logging.warning("[MCP] Missing JOBTREAD credentials, trying vector store or demo data")
+                    if openai_api_key and vector_store_id and tool_name in ["search", "fetch"]:
+                        from openai import OpenAI
+                        client = OpenAI(api_key=openai_api_key)
+                        query = args.get("query", "") if tool_name == "search" else args.get("id", "") if tool_name == "fetch" else ""
+                        response = client.beta.vector_stores.file_searches.perform(
+                            vector_store_id=vector_store_id,
+                            query=query,
+                            max_results=5
+                        )
+                        data = response.data  # Adjust based on response
+                        logging.info(f"[MCP] Vector store response: {json.dumps(response, indent=2)}")
+                    else:
+                        data = DEMO_PROJECTS if tool_name in ["search", "fetch"] else [{"error": "Cannot proceed without credentials"}]
                 else:
-                    payload = {
-                        "organization": {
-                            "$": {"grantKey": grant_key, "id": org_id},
-                            "accounts": {
-                                "$": {
-                                    "where": {
-                                        "and": [
-                                            ["name", "contains", args.get("query", "")] if tool_name == "search" else ["id", "=", args.get("id", "")] if tool_name == "fetch" else {}
-                                        ]
-                                    },
-                                    "size": 5,
-                                    "sortBy": [{"field": "name"}]
-                                },
-                                "nodes": {
-                                    "id": {},
-                                    "name": {},
-                                    "type": {}
+                    payload = {}
+                    if tool_name in JOBTREAD_SCHEMA["queries"]:
+                        payload = {
+                            "organization": {
+                                "$": {"grantKey": grant_key, "id": org_id, "timeZone": "America/Los_Angeles"},
+                                tool_name: {
+                                    "$": {k: v for k, v in args.items() if k in JOBTREAD_SCHEMA["queries"][tool_name]["input"]},
+                                    "nodes": JOBTREAD_SCHEMA["queries"][tool_name]["output"]
                                 }
                             }
                         }
-                    }
+                    elif tool_name in JOBTREAD_SCHEMA["mutations"]:
+                        payload = {
+                            tool_name: {
+                                "$": {
+                                    "grantKey": grant_key,
+                                    **{k: v for k, v in args.items() if k in JOBTREAD_SCHEMA["mutations"][tool_name]["input"]}
+                                },
+                                JOBTREAD_SCHEMA["mutations"][tool_name]["output"].keys(): {}
+                            }
+                        }
+                    elif tool_name in JOBTREAD_SCHEMA["other"]:
+                        payload = {
+                            tool_name: {
+                                "$": args,
+                                JOBTREAD_SCHEMA["other"][tool_name]["output"].keys(): {}
+                            }
+                        }
                     logging.info(f"[MCP] Sending payload to JobTread: {json.dumps(payload, indent=2)}")
                     async with httpx.AsyncClient() as client:
                         r = await client.post("https://api.jobtread.com/pave", json=payload, timeout=10.0)
@@ -214,40 +216,37 @@ async def sse(request: Request):
                             raise
                         response_data = r.json()
                         logging.info(f"[MCP] JobTread API response: {json.dumps(response_data, indent=2)}")
-                        data = response_data.get("organization", {}).get("accounts", {}).get("nodes", [])
-                        if not data:
-                            data = response_data.get("data", {}).get("accounts", {}).get("nodes", [])
-            except httpx.RequestError as e:
-                logging.warning(f"[JobTread API request error, using fallback]: {e}")
-                data = DEMO_PROJECTS
-            except Exception as e:
-                logging.warning(f"[JobTread API error, using fallback]: {e}")
-                data = DEMO_PROJECTS
+                        if tool_name in JOBTREAD_SCHEMA["queries"]:
+                            data = response_data.get("organization", {}).get(tool_name, {}).get("nodes", [])
+                            if not data:
+                                data = response_data.get("data", {}).get(tool_name, {}).get("nodes", [])
+                        elif tool_name in JOBTREAD_SCHEMA["mutations"]:
+                            data = response_data.get(tool_name, {})
+                        else:
+                            data = response_data.get(tool_name, {})
 
-            results = data  # Use nodes as results
-            if tool_name == "search" and not results:
-                results = []  # Ensure empty list for no matches
-            elif tool_name == "fetch" and len(results) > 1:
-                results = [r for r in results if r.get("id") == args.get("id", "")]  # Filter by ID
+                results = [data] if isinstance(data, dict) else data
+                if tool_name == "fetch" and len(results) > 1:
+                    results = [r for r in results if r.get("id") == args.get("id", "")]
 
-            logging.info(f"[MCP] Tool {tool_name} executed, results: {len(results)}")
-            for i, result in enumerate(results):
-                yield json.dumps({
-                    "jsonrpc": "2.0",
-                    "id": rpc_id,
-                    "result": {
-                        "content": [
-                            {
-                                "type": "text",
+                logging.info(f"[MCP] Tool {tool_name} executed, results: {len(results)}")
+                for i, result in enumerate(results):
+                    yield json.dumps({
+                        "jsonrpc": "2.0",
+                        "id": rpc_id,
+                        "result": {
+                            "content": [
+                                {
+                                    "type": "text",
                                 "text": json.dumps([result], indent=2)
-                            }
-                        ],
-                        "isFinal": i == len(results) - 1
-                    }
-                }) + "\n"
-                await asyncio.sleep(0.1)  # Simulate streaming delay
+                                }
+                            ],
+                            "isFinal": i == len(results) - 1
+                        }
+                    }) + "\n"
+                    await asyncio.sleep(0.1)
 
-        return StreamingResponse(stream_results(), media_type="application/json")
+            return StreamingResponse(stream_results(), media_type="application/json")
 
     # 5. Fallback for unknown methods
     logging.warning(f"[MCP] Unknown method: {method}")
