@@ -9,7 +9,7 @@ import uvicorn
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 
-# Enable CORS (required for ChatGPT MCP)
+# Enable CORS for OpenAI Tools
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,7 +18,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Sample fallback projects (for when JobTread API fails)
+# Fallback demo data
 DEMO_PROJECTS = [
     {"id": "demo_1", "name": "Smith Kitchen Remodel", "budget": 50000, "status": "in_progress"},
     {"id": "demo_2", "name": "TechCorp Office Renovation", "budget": 250000, "status": "planning"},
@@ -32,12 +32,12 @@ async def health():
 @app.post("/sse/")
 async def sse(request: Request):
     body = await request.json()
-    logging.info(f"[MCP] Incoming: {json.dumps(body)}")
+    logging.info(f"[MCP] Incoming request: {json.dumps(body)}")
 
     method = body.get("method")
     rpc_id = body.get("id", "unknown")
 
-    # MCP Handshake
+    # 1. MCP Handshake
     if method == "initialize":
         return {
             "jsonrpc": "2.0",
@@ -46,9 +46,7 @@ async def sse(request: Request):
                 "title": "JobTread Connector",
                 "description": "Search JobTread project data",
                 "version": "1.0.0",
-                "capabilities": {
-                    "callable": True
-                },
+                "capabilities": { "callable": True },
                 "serverInfo": {
                     "name": "JobTread MCP Server",
                     "version": "1.0.0"
@@ -56,7 +54,7 @@ async def sse(request: Request):
             }
         }
 
-    # Register tool(s)
+    # 2. Declare tools
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
@@ -81,7 +79,7 @@ async def sse(request: Request):
             }
         }
 
-    # Execute tool
+    # 3. Tool Execution
     if method == "tools/call":
         try:
             tool = body["params"]["name"]
@@ -96,7 +94,7 @@ async def sse(request: Request):
                 r.raise_for_status()
                 data = r.json()
         except Exception as e:
-            logging.warning(f"[JobTread fallback] {e}")
+            logging.warning(f"[JobTread API fallback] {e}")
             data = DEMO_PROJECTS
 
         results = [p for p in data if query in json.dumps(p).lower()][:5]
@@ -114,7 +112,7 @@ async def sse(request: Request):
             }
         }
 
-    # Unsupported methods
+    # 4. Fallback for unknown methods
     return {
         "jsonrpc": "2.0",
         "id": rpc_id,
