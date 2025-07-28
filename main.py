@@ -190,14 +190,13 @@ async def sse(request: Request):
                         }
                     }
                     async with httpx.AsyncClient() as client:
-                        r = await client.post("https://api.jobtread.com/pave", json=payload, timeout=10.0)  # Added timeout
+                        r = await client.post("https://api.jobtread.com/pave", json=payload, timeout=10.0)
                         r.raise_for_status()
                         response_data = r.json()
                         logging.info(f"[MCP] JobTread API response: {json.dumps(response_data, indent=2)}")
-                        # Adjust for Pave-inspired structure or JobTread response
                         data = response_data.get("data", {}).get("projects", []) if "data" in response_data else []
                         if not data:
-                            data = response_data.get("value", [])  # Pave might use "value" for results
+                            data = response_data.get("value", [])  # Fallback for Pave-like structure
             except httpx.RequestError as e:
                 logging.warning(f"[JobTread API request error, using fallback]: {e}")
                 data = DEMO_PROJECTS
