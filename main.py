@@ -188,7 +188,13 @@ async def sse(request: Request):
                             "$": {"grantKey": grant_key, "id": org_id},
                             "accounts": {
                                 "$": {
-                                    "where": [["name", "contains", args.get("query", "")] if tool_name == "search" else ["id", "=", args.get("id", "")] if tool_name == "fetch" else {}]
+                                    "where": {
+                                        "and": [
+                                            ["name", "contains", args.get("query", "")] if tool_name == "search" else ["id", "=", args.get("id", "")] if tool_name == "fetch" else {}
+                                        ]
+                                    },
+                                    "size": 5,
+                                    "sortBy": [{"field": "name"}]
                                 },
                                 "nodes": {
                                     "id": {},
@@ -201,7 +207,11 @@ async def sse(request: Request):
                     logging.info(f"[MCP] Sending payload to JobTread: {json.dumps(payload, indent=2)}")
                     async with httpx.AsyncClient() as client:
                         r = await client.post("https://api.jobtread.com/pave", json=payload, timeout=10.0)
-                        r.raise_for_status()
+                        try:
+                            r.raise_for_status()
+                        except httpx.HTTPStatusError as e:
+                            logging.error(f"[JobTread API error {e.response.status_code}]: {e.response.text}")
+                            raise
                         response_data = r.json()
                         logging.info(f"[MCP] JobTread API response: {json.dumps(response_data, indent=2)}")
                         data = response_data.get("organization", {}).get("accounts", {}).get("nodes", [])
