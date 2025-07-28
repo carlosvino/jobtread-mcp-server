@@ -57,31 +57,40 @@ async def sse(request: Request):
     # 1. MCP Handshake (initialize)
     if method == "initialize":
         params = body.get("params", {})
-        client_protocol = params.get("protocolVersion", "2025-03-26")  # Default if missing
-        # Echo the client's protocolVersion (assume supported; add version check if needed)
+        client_protocol = params.get("protocolVersion", "2025-06-18")  # Default to latest from logs
+        # Echo client's protocolVersion if supported
+        supported_versions = ["2025-03-26", "2025-06-18"]  # Based on your logs
+        if client_protocol not in supported_versions:
+            logging.warning(f"[MCP] Unsupported protocol: {client_protocol}")
+            return {
+                "jsonrpc": "2.0",
+                "id": rpc_id,
+                "error": {"code": -32604, "message": f"Unsupported protocol version: {client_protocol}"}
+            }
+        logging.info(f"[MCP] Initialize successful with version: {client_protocol}")
         return {
             "jsonrpc": "2.0",
             "id": rpc_id,
             "result": {
-                "protocolVersion": client_protocol,  # Echo or set to supported version
+                "protocolVersion": client_protocol,
                 "capabilities": {
-                    "tools": {}  # Basic tools support; add "listChanged": true if you support notifications
+                    "tools": {}  # Basic tool support
                 },
                 "serverInfo": {
                     "name": "JobTread MCP Server",
                     "version": "1.0.0"
-                },
-                "instructions": "Search JobTread projects using the provided tools."  # Optional
+                }
             }
         }
 
-    # Handle 'initialized' notification (client sends this after your response; no reply needed)
+    # Handle 'initialized' notification (no response needed)
     if method == "initialized":
-        logging.info("[MCP] Received 'initialized' notification from client")
-        return {}  # No response for notifications
+        logging.info("[MCP] Received 'initialized' notification")
+        return {}  # Empty response for notifications
 
     # 2. Declare tools
     if method == "tools/list":
+        logging.info("[MCP] Tools/list requested")
         return {
             "jsonrpc": "2.0",
             "id": rpc_id,
@@ -107,20 +116,23 @@ async def sse(request: Request):
 
     # 3. Tool Execution
     if method == "tools/call":
+        logging.info("[MCP] Tools/call requested")
+        params = body.get("params", {})
+        tool_name = params.get("name")
+        args = params.get("arguments", {})
+        query = args.get("query", "").lower()
+
         try:
-            tool = body["params"]["name"]
-            args = body["params"]["arguments"]
-            query = args.get("query", "").lower()
-
             token = os.getenv("JOBTREAD_ACCESS_TOKEN")
+            if not token:
+                raise ValueError("No JOBTREAD_ACCESS_TOKEN set")
             headers = {"Authorization": f"Bearer {token}"}
-
             async with httpx.AsyncClient() as client:
                 r = await client.get("https://api.jobtread.com/v1/projects", headers=headers)
                 r.raise_for_status()
                 data = r.json()
         except Exception as e:
-            logging.warning(f"[JobTread API fallback] {e}")
+            logging.warning(f"[JobTread API error, using fallback]: {e}")
             data = DEMO_PROJECTS
 
         results = [p for p in data if query in json.dumps(p).lower()][:5]
@@ -139,6 +151,7 @@ async def sse(request: Request):
         }
 
     # 4. Fallback for unknown methods
+    logging.warning(f"[MCP] Unknown method: {method}")
     return {
         "jsonrpc": "2.0",
         "id": rpc_id,
