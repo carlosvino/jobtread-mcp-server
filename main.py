@@ -24,12 +24,8 @@ DEMO_PROJECTS = [
     {"id": "demo_2", "name": "TechCorp Office Renovation", "budget": 250000, "status": "planning"},
 ]
 
-# Initialize FastMCP
-mcp = FastMCP(
-    name="JobTread MCP Server",
-    description="Search and fetch JobTread construction projects",
-    version="1.0.0"
-)
+# Initialize FastMCP (only 'name' is supported)
+mcp = FastMCP(name="JobTread MCP Server")
 
 @app.get("/")
 @app.get("/health")
