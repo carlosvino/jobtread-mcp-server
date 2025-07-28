@@ -24,7 +24,7 @@ DEMO_PROJECTS = [
     {"id": "demo_2", "name": "TechCorp Office Renovation", "budget": 250000, "status": "planning"},
 ]
 
-# Initialize FastMCP (only 'name' is supported)
+# Initialize FastMCP
 mcp = FastMCP(name="JobTread MCP Server")
 
 @app.get("/")
@@ -77,7 +77,9 @@ async def fetch(id: str) -> str:
     results = [p for p in data if p.get("id") == id]
     return str(results)
 
+# Mount FastMCP onto FastAPI at /sse/
+app.include_router(mcp.fastapi(), prefix="/sse")
+
 if __name__ == "__main__":
-    mcp.run(app=app, path="/sse/")  # Mounts MCP at /sse/
     port = int(os.environ.get("PORT", 8080))
     uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")
