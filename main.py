@@ -1,15 +1,17 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import os
 import httpx
 import json
 import logging
 import uvicorn
+from fastapi_mcp import FastApiMCP
 
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 
-# Enable CORS for OpenAI Tools
+# Enable CORS for all origins (including OpenAI)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,103 +26,45 @@ DEMO_PROJECTS = [
     {"id": "demo_2", "name": "TechCorp Office Renovation", "budget": 250000, "status": "planning"},
 ]
 
+# Health check endpoint
 @app.get("/")
 @app.get("/health")
 async def health():
     return {"status": "ok", "message": "JobTread MCP server running"}
 
-@app.post("/sse/")
-async def sse(request: Request):
-    body = await request.json()
-    logging.info(f"[MCP] Incoming request: {json.dumps(body)}")
+# Define the search input model
+class SearchInput(BaseModel):
+    query: str
 
-    method = body.get("method")
-    rpc_id = body.get("id", "unknown")
+# Search endpoint (exposed as MCP tool)
+@app.post("/search")
+async def search_projects(input: SearchInput):
+    query = input.query.lower()
+    try:
+        token = os.getenv("JOBTREAD_ACCESS_TOKEN")
+        if not token:
+            raise ValueError("No JOBTREAD_ACCESS_TOKEN found, using demo data")
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient() as client:
+            r = await client.get("https://api.jobtread.com/v1/projects", headers=headers)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        logging.warning(f"[JobTread API fallback] {e}")
+        data = DEMO_PROJECTS
 
-    # 1. MCP Handshake
-    if method == "initialize":
-        return {
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "result": {
-                "title": "JobTread Connector",
-                "description": "Search JobTread project data",
-                "version": "1.0.0",
-                "capabilities": { "callable": True },
-                "serverInfo": {
-                    "name": "JobTread MCP Server",
-                    "version": "1.0.0"
-                }
-            }
-        }
+    results = [p for p in data if query in json.dumps(p).lower()][:5]
+    return {"results": results}
 
-    # 2. Declare tools
-    if method == "tools/list":
-        return {
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "result": {
-                "tools": [
-                    {
-                        "name": "search",
-                        "description": "Search JobTread construction projects",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": "Search term"
-                                }
-                            },
-                            "required": ["query"]
-                        }
-                    }
-                ]
-            }
-        }
+# Initialize and mount MCP
+mcp = FastApiMCP(
+    app,
+    name="JobTread Connector",
+    description="Search JobTread construction projects",
+    # base_url can be set if needed, but Railway will handle it dynamically
+)
 
-    # 3. Tool Execution
-    if method == "tools/call":
-        try:
-            tool = body["params"]["name"]
-            args = body["params"]["arguments"]
-            query = args.get("query", "").lower()
-
-            token = os.getenv("JOBTREAD_ACCESS_TOKEN")
-            headers = {"Authorization": f"Bearer {token}"}
-
-            async with httpx.AsyncClient() as client:
-                r = await client.get("https://api.jobtread.com/v1/projects", headers=headers)
-                r.raise_for_status()
-                data = r.json()
-        except Exception as e:
-            logging.warning(f"[JobTread API fallback] {e}")
-            data = DEMO_PROJECTS
-
-        results = [p for p in data if query in json.dumps(p).lower()][:5]
-
-        return {
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "result": {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(results, indent=2)
-                    }
-                ]
-            }
-        }
-
-    # 4. Fallback for unknown methods
-    return {
-        "jsonrpc": "2.0",
-        "id": rpc_id,
-        "error": {
-            "code": -32601,
-            "message": f"Method '{method}' not supported"
-        }
-    }
+mcp.mount()  # Mounts MCP at /mcp
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
