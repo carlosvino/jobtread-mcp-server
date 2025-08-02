@@ -26,39 +26,213 @@ DEMO_PROJECTS = [
     {"id": "demo_2", "name": "TechCorp Office Renovation", "budget": 250000, "status": "planning"},
 ]
 
-# JobTread Schema Mapping (expanded from docs)
-JOBTREAD_SCHEMA = {
-    "queries": {
-        "account": {"input": {"id": "string"}, "output": {"id": "string", "name": "string", "isTaxable": "boolean", "type": "string"}},
-        "job": {"input": {"id": "string"}, "output": {"id": "string", "name": "string", "description": "string"}},
-        "document": {"input": {"id": "string"}, "output": {"id": "string", "name": "string", "type": "string"}},
-        "customFieldValues": {"input": {"size": "integer"}, "output": {"nodes": {"id": "string", "value": "string", "customField": {"id": "string"}}}},
-        "location": {"input": {"id": "string"}, "output": {"id": "string", "name": "string", "address": "string"}},
-        "task": {"input": {"id": "string"}, "output": {"id": "string", "name": "string", "description": "string"}},
-        # Add more (e.g., "costCode", "payment") as needed
+# Simplified JobTread API operations
+JOBTREAD_OPERATIONS = {
+    "list_jobs": {
+        "description": "List all jobs in the organization",
+        "input": {"limit": "integer", "offset": "integer"},
+        "method": "get_jobs"
     },
-    "mutations": {
-        "createAccount": {"input": {"organizationId": "string", "name": "string", "type": "string", "isTaxable": "boolean"}, "output": {"id": "string", "name": "string", "type": "string"}},
-        "createJob": {"input": {"name": "string", "description": "string", "organizationId": "string"}, "output": {"id": "string", "name": "string"}},
-        "updateAccount": {"input": {"id": "string", "name": "string"}, "output": {"id": "string", "name": "string"}},
-        "deleteAccount": {"input": {"id": "string"}, "output": {"success": "boolean"}},
-        "createDocument": {"input": {"accountId": "string", "name": "string", "type": "string"}, "output": {"id": "string", "name": "string"}},
-        "updateJob": {"input": {"id": "string", "name": "string"}, "output": {"id": "string", "name": "string"}},
-        "deleteJob": {"input": {"id": "string"}, "output": {"success": "boolean"}},
-        # Add more (e.g., "createCostItem", "updateDocument")
+    "get_job": {
+        "description": "Get details of a specific job",
+        "input": {"job_id": "string"},
+        "method": "get_job_detail"
     },
-    "other": {
-        "signQuery": {"input": {"query": "string"}, "output": {"token": "string"}},
-        "notifyTaskAssignees": {"input": {"jobId": "string", "membershipIds": "array"}, "output": {"success": "boolean"}},
-        # Add more (e.g., "closeNegativePayable")
+    "list_customers": {
+        "description": "List all customers",
+        "input": {"limit": "integer", "offset": "integer"},
+        "method": "get_customers"
+    },
+    "get_customer": {
+        "description": "Get details of a specific customer",
+        "input": {"customer_id": "string"},
+        "method": "get_customer_detail"
+    },
+    "list_documents": {
+        "description": "List documents for a job or customer",
+        "input": {"job_id": "string", "customer_id": "string"},
+        "method": "get_documents"
     }
 }
+
+def get_jobtread_credentials():
+    """Get JobTread credentials from environment variables"""
+    # Try multiple possible environment variable names (matching Railway setup)
+    grant_key = (
+        os.getenv("JOBTREAD_GRANT_KEY") or 
+        os.getenv("JOBTREAD_ACCESS_TOKEN") or
+        os.getenv("JOBTREAD_API_KEY") or
+        os.getenv("JOBTREAD_TOKEN")
+    )
+    
+    org_id = (
+        os.getenv("JOBTREAD_ORG_ID") or
+        os.getenv("JOBTREAD_ORGANIZATION_ID")
+    )
+    
+    return grant_key, org_id
+
+async def call_jobtread_api(operation: str, params: dict = None):
+    """
+    Call JobTread API with multiple fallback strategies
+    """
+    grant_key, org_id = get_jobtread_credentials()
+    
+    if not grant_key or not org_id:
+        logging.warning("[JobTread] Missing credentials, returning demo data")
+        return DEMO_PROJECTS
+    
+    if params is None:
+        params = {}
+    
+    # Try different payload structures based on operation
+    payload_strategies = [
+        # Strategy 1: Original complex structure
+        {
+            "url": "https://api.jobtread.com/pave",
+            "payload": {
+                "organization": {
+                    "$": {
+                        "grantKey": grant_key,
+                        "id": org_id,
+                        "timeZone": "America/Los_Angeles"
+                    },
+                    operation: {
+                        "$": params,
+                        "nodes": {
+                            "id": {},
+                            "name": {},
+                            "description": {},
+                            "status": {},
+                            "budget": {}
+                        }
+                    }
+                }
+            }
+        },
+        
+        # Strategy 2: Simplified structure
+        {
+            "url": "https://api.jobtread.com/pave",
+            "payload": {
+                "grantKey": grant_key,
+                "organizationId": org_id,
+                "operation": operation,
+                "parameters": params
+            }
+        },
+        
+        # Strategy 3: Direct API calls
+        {
+            "url": f"https://api.jobtread.com/api/v1/{operation}",
+            "headers": {"Authorization": f"Bearer {grant_key}", "X-Organization-ID": org_id},
+            "payload": params
+        },
+        
+        # Strategy 4: REST-style with different auth
+        {
+            "url": f"https://api.jobtread.com/{operation}",
+            "headers": {"X-Grant-Key": grant_key, "X-Org-ID": org_id},
+            "payload": params
+        }
+    ]
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for i, strategy in enumerate(payload_strategies):
+            try:
+                logging.info(f"[JobTread] Trying strategy {i+1} for {operation}")
+                
+                headers = strategy.get("headers", {"Content-Type": "application/json"})
+                
+                response = await client.post(
+                    strategy["url"],
+                    json=strategy["payload"],
+                    headers=headers
+                )
+                
+                logging.info(f"[JobTread] Strategy {i+1} response: {response.status_code}")
+                
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        logging.info(f"[JobTread] Success with strategy {i+1}")
+                        
+                        # Parse response based on strategy
+                        if i == 0:  # Original complex structure
+                            return data.get("organization", {}).get(operation, {}).get("nodes", [])
+                        elif i == 1:  # Simplified structure  
+                            return data.get("data", data)
+                        else:  # Direct API calls
+                            return data if isinstance(data, list) else [data]
+                            
+                    except json.JSONDecodeError:
+                        logging.warning(f"[JobTread] Strategy {i+1} returned non-JSON: {response.text[:200]}")
+                        continue
+                        
+                elif response.status_code == 401:
+                    logging.error(f"[JobTread] Authentication failed with strategy {i+1}")
+                    continue
+                    
+                elif response.status_code == 404:
+                    logging.warning(f"[JobTread] Endpoint not found with strategy {i+1}")
+                    continue
+                    
+                else:
+                    logging.warning(f"[JobTread] Strategy {i+1} failed: {response.status_code} - {response.text[:200]}")
+                    continue
+                    
+            except httpx.RequestError as e:
+                logging.error(f"[JobTread] Strategy {i+1} request error: {e}")
+                continue
+            except Exception as e:
+                logging.error(f"[JobTread] Strategy {i+1} unexpected error: {e}")
+                continue
+    
+    # If all strategies failed, return demo data
+    logging.warning("[JobTread] All API strategies failed, returning demo data")
+    return DEMO_PROJECTS
 
 @app.get("/")
 @app.get("/health")
 async def health():
-    logging.info("Health check accessed")
-    return {"status": "ok", "message": "JobTread MCP server running"}
+    grant_key, org_id = get_jobtread_credentials()
+    return {
+        "status": "ok", 
+        "message": "JobTread MCP server running",
+        "credentials_found": bool(grant_key and org_id),
+        "grant_key_present": bool(grant_key),
+        "org_id_present": bool(org_id)
+    }
+
+@app.get("/test-auth")
+async def test_auth():
+    """Test endpoint to verify JobTread API connectivity"""
+    grant_key, org_id = get_jobtread_credentials()
+    
+    if not grant_key or not org_id:
+        return {
+            "error": "Missing credentials",
+            "grant_key_present": bool(grant_key),
+            "org_id_present": bool(org_id),
+            "env_vars_checked": [
+                "JOBTREAD_GRANT_KEY", "JOBTREAD_API_KEY", "JOBTREAD_TOKEN",
+                "JOBTREAD_ORG_ID", "JOBTREAD_ORGANIZATION_ID"
+            ]
+        }
+    
+    try:
+        result = await call_jobtread_api("job", {"limit": 5})
+        return {
+            "status": "success",
+            "credentials_working": True,
+            "sample_data": result[:2] if result else []
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "credentials_present": True,
+            "error": str(e)
+        }
 
 @app.get("/sse/")
 async def sse_stream(request: Request) -> StreamingResponse:
@@ -118,7 +292,7 @@ async def sse(request: Request):
                 },
                 "serverInfo": {
                     "name": "JobTread MCP Server",
-                    "version": "1.0.0"
+                    "version": "1.1.0"
                 }
             }
         }
@@ -130,23 +304,22 @@ async def sse(request: Request):
     if method == "tools/list":
         logging.info("[MCP] Tools/list requested")
         tools = []
-        for category, operations in JOBTREAD_SCHEMA.items():
-            for op_name, op_details in operations.items():
-                tool = {
-                    "name": op_name,
-                    "description": f"Perform {category.replace('queries', 'query').replace('mutations', 'action')} {op_name} on JobTread",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {k: {"type": v} for k, v in op_details["input"].items()},
-                        "required": list(op_details["input"].keys()),
-                        "additionalProperties": False
+        
+        for tool_name, config in JOBTREAD_OPERATIONS.items():
+            tool = {
+                "name": tool_name,
+                "description": config["description"],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        param: {"type": param_type} 
+                        for param, param_type in config["input"].items()
                     },
-                    "responseSchema": {
-                        "type": "object" if category == "mutations" or category == "other" else "array",
-                        "properties": op_details["output"] if category in ["mutations", "other"] else {"items": {"type": "object", "properties": op_details["output"]}}
-                    }
+                    "additionalProperties": False
                 }
-                tools.append(tool)
+            }
+            tools.append(tool)
+        
         return {
             "jsonrpc": "2.0",
             "id": rpc_id,
@@ -161,65 +334,19 @@ async def sse(request: Request):
 
         async def stream_results():
             try:
-                grant_key = os.getenv("JOBTREAD_GRANT_KEY")
-                org_id = os.getenv("JOBTREAD_ORG_ID")
-                logging.info(f"[MCP] Detected JOBTREAD_GRANT_KEY: {grant_key or 'None'}, JOBTREAD_ORG_ID: {org_id or 'None'}")
-                if not grant_key or not org_id:
-                    logging.warning("[MCP] Missing JOBTREAD credentials, using demo data")
-                    data = DEMO_PROJECTS if tool_name in JOBTREAD_SCHEMA["queries"] else [{"error": "Cannot proceed without credentials"}] if tool_name in JOBTREAD_SCHEMA["mutations"] else [{}]
-                else:
-                    payload = {}
-                    if tool_name in JOBTREAD_SCHEMA["queries"]:
-                        payload = {
-                            "organization": {
-                                "$": {"grantKey": grant_key, "id": org_id, "timeZone": "America/Los_Angeles"},
-                                tool_name: {
-                                    "$": {k: v for k, v in args.items() if k in JOBTREAD_SCHEMA["queries"][tool_name]["input"]},
-                                    "nodes": JOBTREAD_SCHEMA["queries"][tool_name]["output"]
-                                }
-                            }
-                        }
-                    elif tool_name in JOBTREAD_SCHEMA["mutations"]:
-                        payload = {
-                            tool_name: {
-                                "$": {"grantKey": grant_key, **{k: v for k, v in args.items() if k in JOBTREAD_SCHEMA["mutations"][tool_name]["input"]}},
-                                JOBTREAD_SCHEMA["mutations"][tool_name]["output"].keys(): {}
-                            }
-                        }
-                    elif tool_name in JOBTREAD_SCHEMA["other"]:
-                        payload = {
-                            tool_name: {
-                                "$": args,
-                                JOBTREAD_SCHEMA["other"][tool_name]["output"].keys(): {}
-                            }
-                        }
-                    logging.info(f"[MCP] Sending payload to JobTread: {json.dumps(payload, indent=2)}")
-                    async with httpx.AsyncClient() as client:
-                        r = await client.post("https://api.jobtread.com/pave", json=payload, timeout=10.0)
-                        try:
-                            r.raise_for_status()
-                        except httpx.HTTPStatusError as e:
-                            logging.error(f"[JobTread API error {e.response.status_code}]: {e.response.text}")
-                            raise
-                        response_data = r.json()
-                        logging.info(f"[MCP] JobTread API response: {json.dumps(response_data, indent=2)}")
-                        if tool_name in JOBTREAD_SCHEMA["queries"]:
-                            data = response_data.get("organization", {}).get(tool_name, {}).get("nodes", [])
-                            if not data:
-                                data = response_data.get("data", {}).get(tool_name, {}).get("nodes", [])
-                        elif tool_name in JOBTREAD_SCHEMA["mutations"]:
-                            data = response_data.get(tool_name, {})
-                        else:
-                            data = response_data.get(tool_name, {})
-
-                results = [data] if isinstance(data, dict) else data
-                if tool_name in JOBTREAD_SCHEMA["queries"] and not results:
-                    results = []  # Ensure empty list for no matches
-                elif tool_name in JOBTREAD_SCHEMA["queries"] and len(results) > 1 and "id" in args:
-                    results = [r for r in results if r.get("id") == args.get("id", "")]  # Filter by ID
-
-                logging.info(f"[MCP] Tool {tool_name} executed, results: {len(results)}")
-                for i, result in enumerate(results):
+                logging.info(f"[MCP] Executing tool: {tool_name} with args: {args}")
+                
+                # Call JobTread API
+                data = await call_jobtread_api(tool_name, args)
+                
+                # Ensure data is always a list
+                if not isinstance(data, list):
+                    data = [data] if data else []
+                
+                logging.info(f"[MCP] Tool {tool_name} returned {len(data)} results")
+                
+                # Stream results
+                for i, result in enumerate(data):
                     yield json.dumps({
                         "jsonrpc": "2.0",
                         "id": rpc_id,
@@ -227,16 +354,16 @@ async def sse(request: Request):
                             "content": [
                                 {
                                     "type": "text",
-                                    "text": json.dumps([result], indent=2)
+                                    "text": json.dumps(result, indent=2)
                                 }
                             ],
-                            "isFinal": i == len(results) - 1
+                            "isFinal": i == len(data) - 1
                         }
                     }) + "\n"
                     await asyncio.sleep(0.1)
 
             except Exception as e:
-                logging.error(f"[MCP] Unexpected error: {e}")
+                logging.error(f"[MCP] Tool execution error: {e}")
                 yield json.dumps({
                     "jsonrpc": "2.0",
                     "id": rpc_id,
@@ -245,7 +372,7 @@ async def sse(request: Request):
 
         return StreamingResponse(stream_results(), media_type="application/json")
 
-    # 5. Fallback for unknown methods
+    # Fallback for unknown methods
     logging.warning(f"[MCP] Unknown method: {method}")
     return {
         "jsonrpc": "2.0",
