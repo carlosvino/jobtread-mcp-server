@@ -1,80 +1,6 @@
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-import os
-import httpx
-import json
-import logging
-import uvicorn
-import asyncio
-
-app = FastAPI()
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-# Enable CORS for OpenAI
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Fallback demo data
-DEMO_PROJECTS = [
-    {"id": "demo_1", "name": "Smith Kitchen Remodel", "budget": 50000, "status": "in_progress"},
-    {"id": "demo_2", "name": "TechCorp Office Renovation", "budget": 250000, "status": "planning"},
-]
-
-# Simplified JobTread API operations
-JOBTREAD_OPERATIONS = {
-    "list_jobs": {
-        "description": "List all jobs in the organization",
-        "input": {"limit": "integer", "offset": "integer"},
-        "method": "get_jobs"
-    },
-    "get_job": {
-        "description": "Get details of a specific job",
-        "input": {"job_id": "string"},
-        "method": "get_job_detail"
-    },
-    "list_customers": {
-        "description": "List all customers",
-        "input": {"limit": "integer", "offset": "integer"},
-        "method": "get_customers"
-    },
-    "get_customer": {
-        "description": "Get details of a specific customer",
-        "input": {"customer_id": "string"},
-        "method": "get_customer_detail"
-    },
-    "list_documents": {
-        "description": "List documents for a job or customer",
-        "input": {"job_id": "string", "customer_id": "string"},
-        "method": "get_documents"
-    }
-}
-
-def get_jobtread_credentials():
-    """Get JobTread credentials from environment variables"""
-    # Try multiple possible environment variable names (matching Railway setup)
-    grant_key = (
-        os.getenv("JOBTREAD_GRANT_KEY") or 
-        os.getenv("JOBTREAD_ACCESS_TOKEN") or
-        os.getenv("JOBTREAD_API_KEY") or
-        os.getenv("JOBTREAD_TOKEN")
-    )
-    
-    org_id = (
-        os.getenv("JOBTREAD_ORG_ID") or
-        os.getenv("JOBTREAD_ORGANIZATION_ID")
-    )
-    
-    return grant_key, org_id
-
 async def call_jobtread_api(operation: str, params: dict = None):
     """
-    Call JobTread API with multiple fallback strategies
+    Call JobTread API with corrected payload format based on Railway logs
     """
     grant_key, org_id = get_jobtread_credentials()
     
@@ -85,62 +11,113 @@ async def call_jobtread_api(operation: str, params: dict = None):
     if params is None:
         params = {}
     
-    # Try different payload structures based on operation
+    # Based on Railway logs, JobTread /pave endpoint expects GraphQL-style queries
+    # The "A valid query is required" error suggests we need proper query structure
+    
     payload_strategies = [
-        # Strategy 1: Original complex structure
+        # Strategy 1: Corrected GraphQL-style query for /pave endpoint
         {
             "url": "https://api.jobtread.com/pave",
             "payload": {
-                "organization": {
-                    "$": {
-                        "grantKey": grant_key,
-                        "id": org_id,
-                        "timeZone": "America/Los_Angeles"
-                    },
-                    operation: {
-                        "$": params,
-                        "nodes": {
-                            "id": {},
-                            "name": {},
-                            "description": {},
-                            "status": {},
-                            "budget": {}
-                        }
-                    }
-                }
+                "query": f"""
+                {{
+                    organization(grantKey: "{grant_key}", id: "{org_id}") {{
+                        jobs(first: {params.get('limit', 10)}) {{
+                            nodes {{
+                                id
+                                name
+                                description
+                                status
+                                budget
+                                createdAt
+                                updatedAt
+                            }}
+                        }}
+                    }}
+                }}
+                """.strip()
             }
         },
         
-        # Strategy 2: Simplified structure
+        # Strategy 2: Alternative GraphQL format
+        {
+            "url": "https://api.jobtread.com/pave",
+            "payload": {
+                "operationName": "GetJobs",
+                "variables": {
+                    "grantKey": grant_key,
+                    "organizationId": org_id,
+                    "first": params.get('limit', 10)
+                },
+                "query": """
+                query GetJobs($grantKey: String!, $organizationId: String!, $first: Int) {
+                    organization(grantKey: $grantKey, id: $organizationId) {
+                        jobs(first: $first) {
+                            nodes {
+                                id
+                                name
+                                description
+                                status
+                                budget
+                            }
+                        }
+                    }
+                }
+                """
+            }
+        },
+        
+        # Strategy 3: JobTread's custom query format (based on Zapier examples)
         {
             "url": "https://api.jobtread.com/pave",
             "payload": {
                 "grantKey": grant_key,
                 "organizationId": org_id,
-                "operation": operation,
-                "parameters": params
+                "query": {
+                    "organization": {
+                        "jobs": {
+                            "nodes": {
+                                "id": True,
+                                "name": True,
+                                "description": True,
+                                "status": True,
+                                "budget": True
+                            }
+                        }
+                    }
+                },
+                "variables": params
             }
         },
         
-        # Strategy 3: Direct API calls
+        # Strategy 4: Simple REST-like format with proper headers
         {
-            "url": f"https://api.jobtread.com/api/v1/{operation}",
-            "headers": {"Authorization": f"Bearer {grant_key}", "X-Organization-ID": org_id},
-            "payload": params
-        },
-        
-        # Strategy 4: REST-style with different auth
-        {
-            "url": f"https://api.jobtread.com/{operation}",
-            "headers": {"X-Grant-Key": grant_key, "X-Org-ID": org_id},
-            "payload": params
+            "url": "https://api.jobtread.com/graphql",  # Try GraphQL endpoint
+            "headers": {
+                "Authorization": f"Bearer {grant_key}",
+                "X-Organization-ID": org_id,
+                "Content-Type": "application/json"
+            },
+            "payload": {
+                "query": f"""
+                {{
+                    jobs(first: {params.get('limit', 10)}) {{
+                        id
+                        name
+                        description
+                        status
+                        budget
+                    }}
+                }}
+                """
+            }
         }
     ]
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         for i, strategy in enumerate(payload_strategies):
             try:
-                logging.info(f"[JobTread] Trying strategy {i+1} for {operation}")
+                logging.info(f"[JobTread] Trying corrected strategy {i+1} for {operation}")
                 
                 headers = strategy.get("headers", {"Content-Type": "application/json"})
                 
@@ -151,30 +128,44 @@ async def call_jobtread_api(operation: str, params: dict = None):
                 )
                 
                 logging.info(f"[JobTread] Strategy {i+1} response: {response.status_code}")
+                logging.info(f"[JobTread] Response body preview: {response.text[:200]}...")
                 
                 if response.status_code == 200:
                     try:
                         data = response.json()
-                        logging.info(f"[JobTread] Success with strategy {i+1}")
+                        logging.info(f"[JobTread] SUCCESS with strategy {i+1}!")
                         
                         # Parse response based on strategy
-                        if i == 0:  # Original complex structure
-                            return data.get("organization", {}).get(operation, {}).get("nodes", [])
-                        elif i == 1:  # Simplified structure  
-                            return data.get("data", data)
-                        else:  # Direct API calls
-                            return data if isinstance(data, list) else [data]
+                        if i == 0 or i == 1:  # GraphQL responses
+                            jobs = data.get("data", {}).get("organization", {}).get("jobs", {}).get("nodes", [])
+                            if jobs:
+                                return jobs
+                            else:
+                                return data.get("data", data)
+                        elif i == 2:  # Custom format
+                            return data.get("organization", {}).get("jobs", {}).get("nodes", [])
+                        else:  # REST GraphQL
+                            return data.get("data", {}).get("jobs", [])
                             
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as e:
                         logging.warning(f"[JobTread] Strategy {i+1} returned non-JSON: {response.text[:200]}")
                         continue
                         
+                elif response.status_code == 400:
+                    error_text = response.text
+                    logging.error(f"[JobTread] Strategy {i+1} bad request: {error_text}")
+                    
+                    # If it's still "valid query required", log the exact payload we sent
+                    if "valid query" in error_text.lower():
+                        logging.error(f"[JobTread] Payload that failed: {json.dumps(strategy['payload'], indent=2)}")
+                    continue
+                    
                 elif response.status_code == 401:
-                    logging.error(f"[JobTread] Authentication failed with strategy {i+1}")
+                    logging.error(f"[JobTread] Authentication failed with strategy {i+1} - check Grant Key")
                     continue
                     
                 elif response.status_code == 404:
-                    logging.warning(f"[JobTread] Endpoint not found with strategy {i+1}")
+                    logging.warning(f"[JobTread] Endpoint not found with strategy {i+1}: {strategy['url']}")
                     continue
                     
                 else:
@@ -189,200 +180,74 @@ async def call_jobtread_api(operation: str, params: dict = None):
                 continue
     
     # If all strategies failed, return demo data
-    logging.warning("[JobTread] All API strategies failed, returning demo data")
+    logging.warning("[JobTread] All corrected API strategies failed, returning demo data")
+    logging.info("[JobTread] Contact JobTread support for API documentation or check grant key permissions")
     return DEMO_PROJECTS
 
-@app.get("/")
-@app.get("/health")
-async def health():
-    grant_key, org_id = get_jobtread_credentials()
-    return {
-        "status": "ok", 
-        "message": "JobTread MCP server running",
-        "credentials_found": bool(grant_key and org_id),
-        "grant_key_present": bool(grant_key),
-        "org_id_present": bool(org_id)
-    }
-
-@app.get("/test-auth")
-async def test_auth():
-    """Test endpoint to verify JobTread API connectivity"""
+# Enhanced debugging endpoint
+@app.get("/debug-jobtread")
+async def debug_jobtread():
+    """Enhanced debugging endpoint to test JobTread API with detailed logging"""
     grant_key, org_id = get_jobtread_credentials()
     
     if not grant_key or not org_id:
         return {
             "error": "Missing credentials",
             "grant_key_present": bool(grant_key),
-            "org_id_present": bool(org_id),
-            "env_vars_checked": [
-                "JOBTREAD_GRANT_KEY", "JOBTREAD_API_KEY", "JOBTREAD_TOKEN",
-                "JOBTREAD_ORG_ID", "JOBTREAD_ORGANIZATION_ID"
-            ]
+            "org_id_present": bool(org_id)
         }
     
-    try:
-        result = await call_jobtread_api("job", {"limit": 5})
-        return {
-            "status": "success",
-            "credentials_working": True,
-            "sample_data": result[:2] if result else []
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "credentials_present": True,
-            "error": str(e)
-        }
-
-@app.get("/sse/")
-async def sse_stream(request: Request) -> StreamingResponse:
-    async def event_generator():
-        logging.info("SSE stream initiated")
-        yield 'data: {"status": "connected"}\n\n'
-        try:
-            while True:
-                if await request.is_disconnected():
-                    logging.info("SSE client disconnected")
-                    break
-                yield 'data: {"type": "heartbeat"}\n\n'
-                await asyncio.sleep(30)
-        except Exception as e:
-            logging.error(f"SSE error: {e}")
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-@app.post("/sse/")
-async def sse(request: Request):
-    try:
-        body = await request.json()
-        logging.info(f"[MCP] Incoming request: {json.dumps(body, indent=2)}")
-    except Exception as e:
-        logging.error(f"[MCP] Failed to parse request body: {e}")
-        return {
-            "jsonrpc": "2.0",
-            "id": None,
-            "error": {"code": -32700, "message": "Parse error"}
-        }
-
-    method = body.get("method")
-    rpc_id = body.get("id", None)
-
-    if method == "initialize":
-        params = body.get("params", {})
-        client_protocol = params.get("protocolVersion", "2025-06-18")
-        supported_versions = ["2025-03-26", "2025-06-18"]
-        if client_protocol not in supported_versions:
-            logging.warning(f"[MCP] Unsupported protocol: {client_protocol}")
-            return {
-                "jsonrpc": "2.0",
-                "id": rpc_id,
-                "error": {"code": -32604, "message": f"Unsupported protocol version: {client_protocol}"}
+    # Test just the /pave endpoint with different payload formats
+    test_payloads = [
+        {
+            "name": "Simple GraphQL",
+            "payload": {
+                "query": f'{{ organization(grantKey: "{grant_key}", id: "{org_id}") {{ id name }} }}'
             }
-        logging.info(f"[MCP] Initialize successful with version: {client_protocol}")
-        return {
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "result": {
-                "protocolVersion": client_protocol,
-                "capabilities": {
-                    "tools": {
-                        "listChanged": False,
-                        "callable": True
-                    }
-                },
-                "serverInfo": {
-                    "name": "JobTread MCP Server",
-                    "version": "1.1.0"
-                }
+        },
+        {
+            "name": "Jobs Query",
+            "payload": {
+                "query": f"""
+                {{
+                    organization(grantKey: "{grant_key}", id: "{org_id}") {{
+                        jobs(first: 3) {{
+                            nodes {{
+                                id
+                                name
+                            }}
+                        }}
+                    }}
+                }}
+                """
             }
         }
-
-    if method == "notifications/initialized":
-        logging.info("[MCP] Received 'notifications/initialized'")
-        return {}
-
-    if method == "tools/list":
-        logging.info("[MCP] Tools/list requested")
-        tools = []
-        
-        for tool_name, config in JOBTREAD_OPERATIONS.items():
-            tool = {
-                "name": tool_name,
-                "description": config["description"],
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        param: {"type": param_type} 
-                        for param, param_type in config["input"].items()
-                    },
-                    "additionalProperties": False
-                }
-            }
-            tools.append(tool)
-        
-        return {
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "result": {"tools": tools}
-        }
-
-    if method == "tools/call":
-        logging.info("[MCP] Tools/call requested")
-        params = body.get("params", {})
-        tool_name = params.get("name")
-        args = params.get("arguments", {})
-
-        async def stream_results():
+    ]
+    
+    results = []
+    
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for test in test_payloads:
             try:
-                logging.info(f"[MCP] Executing tool: {tool_name} with args: {args}")
+                response = await client.post(
+                    "https://api.jobtread.com/pave",
+                    json=test["payload"],
+                    headers={"Content-Type": "application/json"}
+                )
                 
-                # Call JobTread API
-                data = await call_jobtread_api(tool_name, args)
+                results.append({
+                    "test": test["name"],
+                    "status": response.status_code,
+                    "response": response.text[:300] + "..." if len(response.text) > 300 else response.text
+                })
                 
-                # Ensure data is always a list
-                if not isinstance(data, list):
-                    data = [data] if data else []
-                
-                logging.info(f"[MCP] Tool {tool_name} returned {len(data)} results")
-                
-                # Stream results
-                for i, result in enumerate(data):
-                    yield json.dumps({
-                        "jsonrpc": "2.0",
-                        "id": rpc_id,
-                        "result": {
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": json.dumps(result, indent=2)
-                                }
-                            ],
-                            "isFinal": i == len(data) - 1
-                        }
-                    }) + "\n"
-                    await asyncio.sleep(0.1)
-
             except Exception as e:
-                logging.error(f"[MCP] Tool execution error: {e}")
-                yield json.dumps({
-                    "jsonrpc": "2.0",
-                    "id": rpc_id,
-                    "error": {"code": -32000, "message": f"Internal error: {str(e)}"}
-                }) + "\n"
-
-        return StreamingResponse(stream_results(), media_type="application/json")
-
-    # Fallback for unknown methods
-    logging.warning(f"[MCP] Unknown method: {method}")
+                results.append({
+                    "test": test["name"],
+                    "error": str(e)
+                })
+    
     return {
-        "jsonrpc": "2.0",
-        "id": rpc_id,
-        "error": {
-            "code": -32601,
-            "message": f"Method '{method}' not supported"
-        }
+        "credentials": {"grant_key_present": True, "org_id_present": True},
+        "test_results": results
     }
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")
