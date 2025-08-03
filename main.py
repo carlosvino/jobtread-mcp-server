@@ -34,7 +34,6 @@ JOBTREAD_OPERATIONS = {
         "method": "search_all"
     },
     "list_jobs": {
-"list_jobs": {
         "description": "List all jobs in the organization",
         "input": {"limit": "integer", "offset": "integer"},
         "method": "get_jobs"
@@ -90,6 +89,24 @@ async def call_jobtread_api(operation: str, params: dict = None):
     
     if params is None:
         params = {}
+    
+    # Handle search requests specifically for ChatGPT
+    if operation == "search":
+        search_query = params.get('query', '')
+        limit = params.get('limit', 10)
+        logging.info(f"[JobTread] Search request for: '{search_query}' (limit: {limit})")
+        
+        # Filter demo data based on search query
+        if search_query:
+            filtered_results = []
+            query_lower = search_query.lower()
+            for project in DEMO_PROJECTS:
+                if (query_lower in project['name'].lower() or 
+                    query_lower in project['status'].lower()):
+                    filtered_results.append(project)
+            return filtered_results[:limit] if filtered_results else DEMO_PROJECTS[:limit]
+        else:
+            return DEMO_PROJECTS[:limit]
     
     # Fixed payload format based on Railway logs analysis
     payload = {
