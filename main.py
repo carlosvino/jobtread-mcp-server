@@ -28,7 +28,13 @@ DEMO_PROJECTS = [
 
 # Simplified JobTread API operations
 JOBTREAD_OPERATIONS = {
+    "search": {
+        "description": "Search JobTread projects, customers, and documents", 
+        "input": {"query": "string", "limit": "integer"},
+        "method": "search_all"
+    },
     "list_jobs": {
+"list_jobs": {
         "description": "List all jobs in the organization",
         "input": {"limit": "integer", "offset": "integer"},
         "method": "get_jobs"
